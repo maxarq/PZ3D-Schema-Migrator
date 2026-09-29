@@ -137,7 +137,7 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
 
 def clean_num(val):
     try:
-        f = float(val.strip())
+        f = float(val)
         return int(f) if f.is_integer() else round(f, 6)
     except ValueError:
         return 0
@@ -159,17 +159,29 @@ class ConversionWorker(QThread):
     log = pyqtSignal(str)
     finished = pyqtSignal(bool, str)
 
-    def __init__(self, source_dir, output_dir):
+    def __init__(self, source_dir, output_dir, blacklist_path):
         super().__init__()
         self.source_dir = Path(source_dir)
         self.output_dir = Path(output_dir)
+        self.blacklist_path = Path(blacklist_path) if blacklist_path else None
         self.mod_folder_name = "pz3d"
 
     def run(self):
         try:
             self.log.emit("Starting migration...")
 
-            # Extract author if present in mod.info
+            # 1. Load door/stair blacklist
+            blacklist = set()
+            if self.blacklist_path and self.blacklist_path.exists():
+                with open(self.blacklist_path, "r", encoding="utf-8", errors="ignore") as bf:
+                    for line in bf:
+                        line = line.strip().lower()
+                        if line and not line.startswith(("#", "//", ";")):
+                            blacklist.add(line)
+                self.log.emit(f"Loaded {len(blacklist)} blacklisted door & stair sprites.")
+            else:
+                self.log.emit("[Warning] No blacklist file loaded. All sprites will be processed.")
+
             author_name = "Local artist"
             mod_info_files = list(self.source_dir.glob("**/mod.info"))
             if mod_info_files:
@@ -177,7 +189,7 @@ class ConversionWorker(QThread):
                 author_name = parsed.get("author", author_name)
                 self.log.emit(f"Detected mod author: {author_name}")
 
-            # 1. Always copy Version Folders (e.g., 42.20.4/) and mod.info
+            # 2. Copy Version Folders (e.g., 42.20.4/) and mod.info
             self.log.emit("Copying version folders & metadata...")
             for mi in mod_info_files:
                 rel = mi.relative_to(self.source_dir)
@@ -198,7 +210,7 @@ class ConversionWorker(QThread):
                 if src_meta.exists():
                     shutil.copy2(src_meta, self.output_dir / meta)
 
-            # 2. Search and parse .properties files
+            # 3. Parse .properties manifests
             self.log.emit("Scanning for .properties manifests...")
             prop_files = list(self.source_dir.glob("**/*.properties"))
 
@@ -210,6 +222,7 @@ class ConversionWorker(QThread):
 
             models = {}
             bindings = {}
+            skipped_doors_stairs = 0
 
             for pf in prop_files:
                 with open(pf, "r", encoding="utf-8", errors="ignore") as f:
@@ -234,14 +247,24 @@ class ConversionWorker(QThread):
                         elif line.startswith("bind."):
                             k, v = line.split("=", 1)
                             tile_name = k[len("bind."):].strip()
+
+                            # Filter out doors and stairs from blacklist
+                            if tile_name.lower() in blacklist:
+                                skipped_doors_stairs += 1
+                                continue
+
                             parts = [p.strip() for p in v.split(",")]
                             if len(parts) >= 6:
                                 model_id = parts[0]
                                 rot_z = clean_num(parts[1])
-                                pos_x = clean_num(parts[2])
-                                pos_y = clean_num(parts[3])
-                                pos_z = clean_num(parts[4])
+                                raw_x = float(parts[2])
+                                raw_y = float(parts[3])
+                                raw_z = clean_num(parts[4])
                                 scale = clean_num(parts[5])
+
+                                # Hardcoded center offset: x + 0.5, y + 0.5
+                                final_x = clean_num(raw_x + 0.5)
+                                final_y = clean_num(raw_y + 0.5)
 
                                 if model_id not in bindings:
                                     bindings[model_id] = []
@@ -249,22 +272,28 @@ class ConversionWorker(QThread):
                                 bindings[model_id].append({
                                     "tile": tile_name,
                                     "placement": {
-                                        "position": [pos_x, pos_y, pos_z],
+                                        "position": [final_x, final_y, raw_z],
                                         "rotation": [0, 0, rot_z],
                                         "scale": [scale, scale, scale]
                                     }
                                 })
 
-            self.log.emit(f"Loaded {len(models)} models and {sum(len(b) for b in bindings.values())} bindings.")
+            self.log.emit(f"Skipped {skipped_doors_stairs} door and stair bindings.")
+            self.log.emit(f"Loaded {sum(len(b) for b in bindings.values())} valid bindings across {len(models)} models.")
 
-            # 3. Always output to: common/media/pz3d/assets
+            # 4. Target directory: common/media/pz3d/assets
             target_assets_dir = self.output_dir / "common" / "media" / self.mod_folder_name / "assets"
             target_assets_dir.mkdir(parents=True, exist_ok=True)
 
-            # 4. Group Models into Assets & Variants
+            # 5. Group Models into Assets & Prune empty ones
             assets_dict = {}
 
             for model_id, obj_path in models.items():
+                # If all bindings for this model were doors/stairs, skip it completely
+                model_bindings = bindings.get(model_id, [])
+                if not model_bindings:
+                    continue
+
                 match = UUID_REGEX.search(str(obj_path))
                 if match:
                     asset_uuid = match.group(1).lower()
@@ -272,9 +301,7 @@ class ConversionWorker(QThread):
                     asset_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, str(obj_path)))
 
                 if asset_uuid not in assets_dict:
-                    friendly_name = "3D Asset"
-                    if model_id in bindings and bindings[model_id]:
-                        friendly_name = bindings[model_id][0]["tile"].replace("_", " ").title()
+                    friendly_name = model_bindings[0]["tile"].replace("_", " ").title()
 
                     assets_dict[asset_uuid] = {
                         "directory": asset_uuid,
@@ -289,13 +316,13 @@ class ConversionWorker(QThread):
                 variant_name = obj_path.stem or "default"
                 assets_dict[asset_uuid]["variants"][variant_name] = {
                     "file": obj_path.name,
-                    "bindings": bindings.get(model_id, [])
+                    "bindings": model_bindings
                 }
 
                 if obj_path.exists():
                     assets_dict[asset_uuid]["source_dirs"].add(obj_path.parent)
 
-            # 5. Always copy 3D model files & textures
+            # 6. Copy 3D model files & textures (Only for active, non-door assets)
             total_assets = len(assets_dict)
             copied_files_count = 0
             final_assets_list = []
@@ -323,7 +350,7 @@ class ConversionWorker(QThread):
                     "variants": data["variants"]
                 })
 
-            # 6. Save assets.json
+            # 7. Save assets.json
             output_json = {
                 "schema": "pz3d:assets/1",
                 "assets": final_assets_list
@@ -336,10 +363,10 @@ class ConversionWorker(QThread):
 
             msg = (
                 f"Conversion completed successfully!\n\n"
-                f"- Output Path: common/media/pz3d/assets/\n"
-                f"- Assets Migrated: {total_assets}\n"
+                f"- Excluded door/stair bindings: {skipped_doors_stairs}\n"
+                f"- Clean Assets Migrated: {total_assets}\n"
                 f"- Files Copied: {copied_files_count}\n"
-                f"- JSON Generated: {json_path.name}"
+                f"- Path: common/media/pz3d/assets/assets.json"
             )
             self.finished.emit(True, msg)
 
@@ -351,7 +378,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PZ3D Schema Migrator")
-        self.resize(680, 520)
+        self.resize(680, 560)
         self.init_ui()
 
     def init_ui(self):
@@ -362,7 +389,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(18, 18, 18, 18)
 
         # Paths Group
-        grp_paths = QGroupBox("Directories")
+        grp_paths = QGroupBox("Directories & Exclusion List")
         paths_layout = QVBoxLayout(grp_paths)
         paths_layout.setSpacing(10)
 
@@ -387,6 +414,22 @@ class MainWindow(QMainWindow):
         h2.addWidget(self.txt_output)
         h2.addWidget(btn_out)
         paths_layout.addLayout(h2)
+
+        # Blacklist File (doors_and_stairs.txt)
+        h3 = QHBoxLayout()
+        self.txt_blacklist = QLineEdit()
+        self.txt_blacklist.setPlaceholderText("doors_and_stairs.txt (Auto-detected if present)")
+        btn_bl = QPushButton("Browse...")
+        btn_bl.clicked.connect(self.browse_blacklist)
+        h3.addWidget(QLabel("Exclude List:"))
+        h3.addWidget(self.txt_blacklist)
+        h3.addWidget(btn_bl)
+        paths_layout.addLayout(h3)
+
+        # Auto-detect doors_and_stairs.txt in the current directory
+        default_bl = Path("doors_and_stairs.txt")
+        if default_bl.exists():
+            self.txt_blacklist.setText(str(default_bl.resolve()))
 
         layout.addWidget(grp_paths)
 
@@ -418,6 +461,11 @@ class MainWindow(QMainWindow):
         if d:
             self.txt_output.setText(d)
 
+    def browse_blacklist(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Select doors_and_stairs.txt", "", "Text Files (*.txt);;All Files (*)")
+        if f:
+            self.txt_blacklist.setText(f)
+
     def append_log(self, text):
         self.txt_log.append(text)
 
@@ -428,6 +476,7 @@ class MainWindow(QMainWindow):
     def start_conversion(self):
         src = self.txt_source.text().strip()
         out = self.txt_output.text().strip()
+        bl = self.txt_blacklist.text().strip()
 
         if not src or not os.path.exists(src):
             QMessageBox.critical(self, "Error", "Please select a valid Mod Directory.")
@@ -441,7 +490,7 @@ class MainWindow(QMainWindow):
         self.txt_log.clear()
         self.pbar.setValue(0)
 
-        self.worker = ConversionWorker(src, out)
+        self.worker = ConversionWorker(src, out, bl)
         self.worker.log.connect(self.append_log)
         self.worker.progress.connect(self.update_progress)
         self.worker.finished.connect(self.on_finished)
