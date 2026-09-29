@@ -34,3 +34,21 @@ Output_Folder/
                     ├── model.obj
                     ├── model.mtl
                     └── texture.png
+```
+
+## Running from Source
+
+If you prefer running via Python rather than the binary:
+
+```bash
+pip install PyQt6
+python main.py
+```
+
+To compile the standalone `.exe` with the bundled doors and stairs list:
+
+```bash
+pip install pyinstaller PyQt6
+pyinstaller --noconsole --onefile --add-data "doors_and_stairs.txt;." --name "PZ3D-Schema-Migrator" main.py
+```
+```
