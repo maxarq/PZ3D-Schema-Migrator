@@ -51,4 +51,3 @@ To compile the standalone `.exe` with the bundled doors and stairs list:
 pip install pyinstaller PyQt6
 pyinstaller --noconsole --onefile --add-data "doors_and_stairs.txt;." --name "PZ3D-Schema-Migrator" main.py
 ```
-```
