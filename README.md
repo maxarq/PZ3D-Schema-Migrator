@@ -1,6 +1,12 @@
 # PZ3D Schema Migrator
 
-Converts legacy PZ3D model packs broken by the 0.4.1 Assets Manager update into the new `pz3d:assets/1` JSON schema. It parses old `package*.properties` files, transfers transforms, and reorganizes assets into `\common\media\pz3d\assets\`.
+Converts legacy PZ3D model packs broken by the 0.4.1 Assets Manager update into the new `pz3d:assets/1` JSON schema. It parses old `package*.properties` files, automatically applies tile-centering offsets (`+0.5, +0.5`), and reorganizes assets into `\common\media\pz3d\assets\`.
+
+## Features
+
+- **Automated Schema Migration:** Converts legacy `.properties` files into valid `assets.json` declarations.
+- **Tile Alignment Fix:** Corrects legacy corner-anchored models by applying the `+0.5, +0.5` center alignment required by PZ3D 0.4.x.
+- **Doors and Stairs Filter:** Automatically excludes over 1,400 vanilla door and stair sprites (using a bundled definitions list) that were broken by legacy offset hacks, allowing PZ3D's native functional models to load instead.
 
 ## Usage (Executable)
 
@@ -28,20 +34,3 @@ Output_Folder/
                     ├── model.obj
                     ├── model.mtl
                     └── texture.png
-```
-
-## Running from Source
-
-If you prefer running via Python rather than the binary:
-
-```bash
-pip install PyQt6
-python main.py
-```
-
-To compile the `.exe` yourself:
-
-```bash
-pip install pyinstaller PyQt6
-pyinstaller --noconsole --onefile --name "PZ3D-Schema-Migrator" main.py
-```
