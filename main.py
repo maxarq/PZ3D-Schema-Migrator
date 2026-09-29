@@ -135,6 +135,12 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
 }
 """
 
+def get_resource_path(relative_path):
+    """Gets absolute path to resource, works for dev and for PyInstaller bundle."""
+    if hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / relative_path
+    return Path(__file__).resolve().parent / relative_path
+
 def clean_num(val):
     try:
         f = float(val)
@@ -178,9 +184,9 @@ class ConversionWorker(QThread):
                         line = line.strip().lower()
                         if line and not line.startswith(("#", "//", ";")):
                             blacklist.add(line)
-                self.log.emit(f"Loaded {len(blacklist)} blacklisted door & stair sprites.")
+                self.log.emit(f"Loaded {len(blacklist)} blacklisted door & stair definitions.")
             else:
-                self.log.emit("[Warning] No blacklist file loaded. All sprites will be processed.")
+                self.log.emit("[Warning] No exclude list loaded. All sprites will be processed.")
 
             author_name = "Local artist"
             mod_info_files = list(self.source_dir.glob("**/mod.info"))
@@ -248,7 +254,7 @@ class ConversionWorker(QThread):
                             k, v = line.split("=", 1)
                             tile_name = k[len("bind."):].strip()
 
-                            # Filter out doors and stairs from blacklist
+                            # Exclude doors and stairs from blacklist
                             if tile_name.lower() in blacklist:
                                 skipped_doors_stairs += 1
                                 continue
@@ -262,7 +268,7 @@ class ConversionWorker(QThread):
                                 raw_z = clean_num(parts[4])
                                 scale = clean_num(parts[5])
 
-                                # Hardcoded center offset: x + 0.5, y + 0.5
+                                # Hardcoded center alignment: x + 0.5, y + 0.5
                                 final_x = clean_num(raw_x + 0.5)
                                 final_y = clean_num(raw_y + 0.5)
 
@@ -278,18 +284,17 @@ class ConversionWorker(QThread):
                                     }
                                 })
 
-            self.log.emit(f"Skipped {skipped_doors_stairs} door and stair bindings.")
+            self.log.emit(f"Filtered out {skipped_doors_stairs} door and stair bindings.")
             self.log.emit(f"Loaded {sum(len(b) for b in bindings.values())} valid bindings across {len(models)} models.")
 
             # 4. Target directory: common/media/pz3d/assets
             target_assets_dir = self.output_dir / "common" / "media" / self.mod_folder_name / "assets"
             target_assets_dir.mkdir(parents=True, exist_ok=True)
 
-            # 5. Group Models into Assets & Prune empty ones
+            # 5. Group Models into Assets & Prune empty assets
             assets_dict = {}
 
             for model_id, obj_path in models.items():
-                # If all bindings for this model were doors/stairs, skip it completely
                 model_bindings = bindings.get(model_id, [])
                 if not model_bindings:
                     continue
@@ -363,7 +368,7 @@ class ConversionWorker(QThread):
 
             msg = (
                 f"Conversion completed successfully!\n\n"
-                f"- Excluded door/stair bindings: {skipped_doors_stairs}\n"
+                f"- Excluded door/stair sprites: {skipped_doors_stairs}\n"
                 f"- Clean Assets Migrated: {total_assets}\n"
                 f"- Files Copied: {copied_files_count}\n"
                 f"- Path: common/media/pz3d/assets/assets.json"
@@ -415,10 +420,10 @@ class MainWindow(QMainWindow):
         h2.addWidget(btn_out)
         paths_layout.addLayout(h2)
 
-        # Blacklist File (doors_and_stairs.txt)
+        # Blacklist File (Auto-detects bundled or local doors_and_stairs.txt)
         h3 = QHBoxLayout()
         self.txt_blacklist = QLineEdit()
-        self.txt_blacklist.setPlaceholderText("doors_and_stairs.txt (Auto-detected if present)")
+        self.txt_blacklist.setPlaceholderText("doors_and_stairs.txt (Bundled)")
         btn_bl = QPushButton("Browse...")
         btn_bl.clicked.connect(self.browse_blacklist)
         h3.addWidget(QLabel("Exclude List:"))
@@ -426,10 +431,10 @@ class MainWindow(QMainWindow):
         h3.addWidget(btn_bl)
         paths_layout.addLayout(h3)
 
-        # Auto-detect doors_and_stairs.txt in the current directory
-        default_bl = Path("doors_and_stairs.txt")
-        if default_bl.exists():
-            self.txt_blacklist.setText(str(default_bl.resolve()))
+        # Look for bundled resource first, then local directory
+        bundled_bl = get_resource_path("doors_and_stairs.txt")
+        if bundled_bl.exists():
+            self.txt_blacklist.setText(str(bundled_bl.resolve()))
 
         layout.addWidget(grp_paths)
 
